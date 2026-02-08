@@ -1,0 +1,12 @@
+runpod
+boto3
+pydantic
+requests
+torch
+torchvision
+diffusers
+transformers
+accelerate
+sentencepiece
+imageio[ffmpeg]
+Pillow
