@@ -11,19 +11,37 @@ runpod.api_key = server_settings.RUNPOD_API_KEY
 
 # ============================================================
 # GLOBAL MODEL LOADING
-# Both T2V and I2V pipelines are loaded ONCE here at startup.
-# This runs before RunPod begins accepting jobs.
-# Loading Wan 2.1 14B takes ~3-5 minutes per pipeline.
-# No safety filters are applied to either pipeline.
+#
+# Wan 2.2 A14B MoE (Mixture of Experts) pipeline loaded ONCE
+# at startup. This runs before RunPod begins accepting jobs.
+#
+# Model architecture:
+#   - High-noise expert: Handles initial layout and composition
+#   - Low-noise expert: Refines details, textures, and motion
+#   - MoE routing: Automatically selects expert per timestep
+#
+# Loading takes ~3-5 minutes (first run downloads ~30GB).
+# Models are cached at /workspace/models (RunPod network volume).
+# No safety filters are applied.
 # ============================================================
 print("=" * 60)
-print("Initializing VideoService - loading Wan 2.1 pipelines...")
+print(f"Initializing VideoService — Wan {server_settings.WAN_VERSION}")
+print(f"  I2V Model: {server_settings.I2V_MODEL_ID}")
+print(f"  Cache Dir: {server_settings.MODEL_CACHE_DIR}")
+print(f"  VAE Tiling: {server_settings.ENABLE_VAE_TILING}")
+print(f"  CPU Offload: {server_settings.ENABLE_CPU_OFFLOAD}")
+print(f"  SageAttention: {server_settings.ENABLE_SAGE_ATTENTION}")
 print("=" * 60)
 
 video_service = VideoService()
 
+gpu_info = video_service.get_gpu_info()
 print("=" * 60)
-print("VideoService ready. Starting RunPod handler.")
+print(f"VideoService ready. GPU: {gpu_info.get('gpu', 'N/A')}")
+print(f"  VRAM Total: {gpu_info.get('vram_total_gb', 0)}GB")
+print(f"  VRAM Used: {gpu_info.get('vram_used_gb', 0)}GB")
+print(f"  SageAttention: {gpu_info.get('sage_attention', False)}")
+print("Starting RunPod handler.")
 print("=" * 60)
 
 
@@ -31,42 +49,41 @@ def process_request_payload(request_dict):
     """
     Validate incoming payload and construct a Job.
 
-    Expected payload for Text-to-Video:
+    Expected payload for Image-to-Video (Wan 2.2):
     {
         "job_id": "abc-123",
-        "webhook_url": "https://api.fancrush.ai/webhook",
+        "webhook_url": "https://api.example.com/webhook",
         "job_request_params": [
             {
-                "prompt": "A woman walking on the beach at sunset",
-                "negative_prompt": "blurry, low quality",
-                "height": 480,
-                "width": 832,
-                "num_frames": 81,
-                "guidance_scale": 5.0,
-                "num_inference_steps": 50,
-                "seed": 42,
-                "fps": 15
-            }
-        ]
-    }
-
-    For Image-to-Video (identity preservation), add reference_image_url:
-    {
-        "job_id": "abc-123",
-        "webhook_url": "https://api.fancrush.ai/webhook",
-        "job_request_params": [
-            {
-                "prompt": "The person is dancing at a party",
+                "prompt": "The person is dancing gracefully at a party",
                 "reference_image_url": "https://storage.com/person_photo.png",
                 "height": 720,
                 "width": 1280,
                 "num_frames": 81,
                 "guidance_scale": 5.0,
                 "num_inference_steps": 50,
-                "fps": 15
+                "fps": 16,
+
+                // NEW in Wan 2.2:
+                "camera_motion": "dolly_in",        // optional
+                "enhance_prompt": true,              // auto cinematic enhancement
+                "quality_preset": "high"             // draft|standard|high|ultra
             }
         ]
     }
+
+    Camera motion options:
+        pan_left, pan_right, pan_up, pan_down,
+        zoom_in, zoom_out, static,
+        orbit_left, orbit_right,
+        dolly_in, dolly_out,
+        crane_up, crane_down, handheld
+
+    Quality presets:
+        draft    — 30 steps, fast preview
+        standard — 50 steps, balanced
+        high     — 80 steps, best quality
+        ultra    — 100 steps, maximum quality
     """
     job_id = request_dict.get("job_id")
     job_request_params = request_dict.get("job_request_params", None)
@@ -121,7 +138,7 @@ async def callback(data):
         print("No request payload found!")
         return {"error": "No request payload found!"}
 
-    print(f"Received message: {data}")
+    print(f"\nReceived job request: {data.get('job_id', 'unknown')}")
     job = process_request_payload(data)
 
     if not job:

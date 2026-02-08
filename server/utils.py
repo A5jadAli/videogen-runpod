@@ -1,11 +1,12 @@
 import os
+import uuid
 import time
 import requests
 from datetime import datetime
 
 
 def webhook_response(webhook_url, status, code, message, data=None):
-    """Final result webhook - same format as image generation service."""
+    """Final result webhook — same format as image generation service."""
     response_data = {
         "status": status,
         "code": code,
@@ -42,23 +43,70 @@ def send_progress_webhook(webhook_url, job_id, progress, status):
         print(f"Error sending progress webhook: {e}")
 
 
-def download_reference_image(image_url, save_dir="/tmp"):
+def download_reference_image(image_url, save_dir="/tmp/ref_images"):
     """
     Download a reference image for image-to-video generation.
-    Returns the local file path.
+
+    Improvements over v1:
+    - Unique filenames to avoid collisions with concurrent requests
+    - Retry logic for transient failures
+    - Better content-type detection
+    - Size validation
+
+    Returns the local file path or None on failure.
     """
+    MAX_RETRIES = 3
+    MAX_SIZE_MB = 50
+
     try:
         os.makedirs(save_dir, exist_ok=True)
-        file_ext = image_url.split(".")[-1].split("?")[0]
-        if file_ext not in ["jpg", "jpeg", "png", "webp"]:
+
+        # Determine extension from URL
+        file_ext = image_url.split(".")[-1].split("?")[0].lower()
+        if file_ext not in ["jpg", "jpeg", "png", "webp", "bmp", "tiff"]:
             file_ext = "png"
-        local_path = os.path.join(save_dir, f"ref_image.{file_ext}")
-        response = requests.get(image_url, timeout=30)
-        response.raise_for_status()
-        with open(local_path, "wb") as f:
-            f.write(response.content)
-        print(f"Reference image downloaded to {local_path}")
-        return local_path
+
+        # Unique filename to avoid collisions
+        local_path = os.path.join(save_dir, f"ref_{uuid.uuid4().hex[:12]}.{file_ext}")
+
+        # Download with retry
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = requests.get(
+                    image_url,
+                    timeout=60,
+                    stream=True,
+                    headers={"User-Agent": "VideoGen-RunPod/2.0"},
+                )
+                response.raise_for_status()
+
+                # Check content length if available
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > MAX_SIZE_MB * 1024 * 1024:
+                    print(f"Reference image too large: {int(content_length) / 1e6:.1f}MB (max {MAX_SIZE_MB}MB)")
+                    return None
+
+                with open(local_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+                # Validate it's actually an image
+                from PIL import Image
+                img = Image.open(local_path)
+                img.verify()
+
+                print(f"Reference image downloaded to {local_path} (attempt {attempt})")
+                return local_path
+
+            except requests.RequestException as e:
+                if attempt < MAX_RETRIES:
+                    wait_time = attempt * 2
+                    print(f"Download attempt {attempt} failed ({e}), retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"All {MAX_RETRIES} download attempts failed: {e}")
+                    return None
+
     except Exception as e:
         print(f"Error downloading reference image: {e}")
         return None
@@ -68,7 +116,7 @@ def delete_old_files(directory_path):
     """
     Delete video and temp files older than 1 hour.
     """
-    extensions = [".mp4", ".avi", ".mov", ".webm", ".tmp", ".png", ".jpg"]
+    extensions = [".mp4", ".avi", ".mov", ".webm", ".tmp", ".png", ".jpg", ".jpeg"]
     current_time = time.time()
     one_hour_ago = current_time - (60 * 60)
 
@@ -93,9 +141,10 @@ def delete_old_files(directory_path):
                         f"Deleted: {filename} (Created: {datetime.fromtimestamp(file_creation_time)})"
                     )
 
-        print(f"Deleted {deleted_count} file(s) that were at least 1 hour old.")
+        if deleted_count > 0:
+            print(f"Deleted {deleted_count} file(s) that were at least 1 hour old.")
         return deleted_count, deleted_files
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error cleaning up files: {e}")
         return 0, []

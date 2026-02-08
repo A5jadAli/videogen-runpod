@@ -6,8 +6,13 @@ from server.utils import webhook_response, send_progress_webhook, download_refer
 
 async def process_job(job: Job, video_service):
     """
-    Process a video generation job.
-    Mirrors ComfyAPI-RunPod request_processor.py pattern.
+    Process a video generation job using Wan 2.2 A14B MoE pipeline.
+
+    Handles:
+    - Text-to-Video (no reference image)
+    - Image-to-Video with identity preservation (reference image provided)
+    - Camera motion control via prompt enhancement
+    - Quality presets (draft/standard/high/ultra)
     """
 
     def progress_callback(progress_percent, status):
@@ -19,7 +24,16 @@ async def process_job(job: Job, video_service):
         )
 
     for idx, param in enumerate(job.job_request_params):
+        print(f"\n{'='*60}")
         print(f"Processing video request {idx + 1}/{len(job.job_request_params)} for job {job.job_id}")
+        print(f"  Mode: {'I2V' if param.reference_image_url else 'T2V'}")
+        print(f"  Resolution: {param.width}x{param.height}")
+        print(f"  Frames: {param.num_frames} @ {param.fps}fps ({param.num_frames/param.fps:.1f}s)")
+        if param.camera_motion:
+            print(f"  Camera: {param.camera_motion}")
+        if param.quality_preset:
+            print(f"  Quality: {param.quality_preset}")
+        print(f"{'='*60}")
 
         # Download reference image if provided (for I2V / identity preservation)
         reference_image_path = None
@@ -36,6 +50,7 @@ async def process_job(job: Job, video_service):
                 )
                 continue
 
+        # Generate video with Wan 2.2
         video_path = video_service.generate_video(
             prompt=param.prompt,
             negative_prompt=param.negative_prompt,
@@ -48,6 +63,9 @@ async def process_job(job: Job, video_service):
             flow_shift=param.flow_shift,
             fps=param.fps,
             reference_image_path=reference_image_path,
+            camera_motion=param.camera_motion,
+            enhance_prompt=param.enhance_prompt,
+            quality_preset=param.quality_preset,
             progress_callback=progress_callback,
         )
 
@@ -108,6 +126,7 @@ def process_response(job: Job, request: VideoRequest, video_path: str):
             duration_seconds=round(duration_seconds, 2),
             num_frames=request.num_frames,
             resolution=f"{request.width}x{request.height}",
+            model_version="wan2.2-i2v-a14b",
         )
 
         webhook_response(
