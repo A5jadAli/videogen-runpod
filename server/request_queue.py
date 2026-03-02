@@ -7,28 +7,26 @@ class VideoRequest(BaseModel):
     """
     Video generation request parameters for Wan 2.2.
 
-    Supports three generation modes:
-    1. Text-to-Video (T2V): Just provide a prompt
-    2. Image-to-Video (I2V): Provide prompt + reference_image_url
-    3. Controlled I2V: Provide prompt + reference_image_url + control options
+    Supports:
+    1. Image-to-Video (I2V): Provide prompt + reference_image_url (primary mode)
+    2. Text-to-Video (T2V): Just provide a prompt (requires T2V pipeline enabled)
 
-    Camera motion can be controlled via:
-    - camera_motion param (predefined camera movements)
-    - Embedding camera instructions directly in the prompt
-
-    Wan 2.2 prompt structure for best results:
-      "Subject (description) + Scene (description) + Motion (description) + Aesthetic Control + Style"
+    Post-processing pipeline (enabled by default):
+    - Face restoration (CodeFormer) → Frame interpolation (RIFE) → Upscaling (Real-ESRGAN) → FFmpeg finishing
     """
 
     prompt: str
 
+    # Research-backed negative prompt: includes temporal stability terms
+    # (flicker, exposure flicker, frame hopping) and face morphing prevention
     negative_prompt: str = (
         "Bright tones, overexposed, static, blurred details, subtitles, style, works, "
         "paintings, images, static, overall gray, worst quality, low quality, JPEG compression "
         "residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, "
         "deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, "
         "three legs, many people in the background, walking backwards, blurring, mutation, "
-        "deformation, distortion, dark and solid, comics"
+        "deformation, distortion, dark and solid, comics, "
+        "flicker, exposure flicker, frame hopping, face morphing, feature drift"
     )
 
     # Resolution — Wan 2.2 supports up to 720p natively
@@ -38,49 +36,55 @@ class VideoRequest(BaseModel):
     # Frame count — Wan 2.2 requires (num_frames - 1) % 4 == 0
     num_frames: int = 81
 
-    # Generation params
-    guidance_scale: float = 5.0
-    num_inference_steps: int = 50
+    # Generation params — optimized for Wan 2.2 I2V
+    # guidance_scale=3.5 is official recommendation (range: 3.0-5.0)
+    guidance_scale: float = 3.5
+    num_inference_steps: int = 40  # Official recommendation; 30 minimum
     seed: int | None = None
-    flow_shift: float | None = None
+    flow_shift: float | None = None  # Auto: 3.0 for 480p, 5.0 for 720p
     fps: int = 16
 
     # ============================================================
-    # Image-to-Video (identity preservation)
+    # Image-to-Video
     # ============================================================
     reference_image_url: str | None = None
 
     # ============================================================
-    # Camera motion control (Wan 2.2 feature)
-    # Appended to prompt automatically for cinematic control.
-    # Options: pan_left, pan_right, pan_up, pan_down,
-    #          zoom_in, zoom_out, static, orbit_left, orbit_right,
-    #          dolly_in, dolly_out, crane_up, crane_down, handheld
+    # Camera motion control
     # ============================================================
     camera_motion: str | None = None
 
     # ============================================================
-    # Prompt enhancement — auto-enhance prompt for Wan 2.2 style
-    # Adds cinematic descriptors, aesthetic tags, motion qualifiers
+    # Prompt enhancement
     # ============================================================
-    enhance_prompt: bool = True
+    enhance_prompt: Literal["none", "light", "full"] = "light"
 
     # ============================================================
-    # Quality preset — quick override for common configurations
-    # "draft": 30 steps, lower guidance — fast preview
-    # "standard": 50 steps — balanced quality/speed
-    # "high": 80 steps, higher guidance — best quality
-    # "ultra": 100 steps — maximum quality, slowest
+    # Quality preset
     # ============================================================
     quality_preset: Literal["draft", "standard", "high", "ultra"] | None = None
+
+    # ============================================================
+    # Post-Processing Pipeline Controls
+    # ============================================================
+    enable_post_processing: bool = True
+    enable_face_restore: bool = True
+    enable_interpolation: bool = True
+    enable_upscale: bool = True
+    enable_ffmpeg_enhance: bool = True
+
+    upscale_factor: float = 2.0
+    target_fps: int = 24
+    face_fidelity: float = 0.6  # CodeFormer w: 0.5-0.7 optimal for AI video
 
     @field_validator("num_frames")
     @classmethod
     def validate_num_frames(cls, v):
-        """Wan 2.2 requires (num_frames - 1) % 4 == 0"""
+        """Wan 2.2 requires (num_frames - 1) % 4 == 0. Capped at ~10s at 16fps."""
+        v = max(5, min(v, 161))
         if (v - 1) % 4 != 0:
             adjusted = ((v - 1) // 4) * 4 + 1
-            if adjusted < 1:
+            if adjusted < 5:
                 adjusted = 5
             return adjusted
         return v
@@ -88,17 +92,47 @@ class VideoRequest(BaseModel):
     @field_validator("height")
     @classmethod
     def validate_height(cls, v):
+        """Clamp to 256-720 range, align to 16px."""
+        v = max(256, min(v, 720))
         return (v // 16) * 16
 
     @field_validator("width")
     @classmethod
     def validate_width(cls, v):
+        """Clamp to 256-1280 range, align to 16px."""
+        v = max(256, min(v, 1280))
         return (v // 16) * 16
+
+    @field_validator("guidance_scale")
+    @classmethod
+    def validate_guidance_scale(cls, v):
+        """Clamp guidance_scale to safe I2V range. >5.0 causes artifacts."""
+        return max(1.0, min(v, 7.0))
+
+    @field_validator("num_inference_steps")
+    @classmethod
+    def validate_num_inference_steps(cls, v):
+        """Minimum 20 steps for any usable quality."""
+        return max(20, min(v, 100))
+
+    @field_validator("upscale_factor")
+    @classmethod
+    def validate_upscale_factor(cls, v):
+        return max(1.0, min(v, 4.0))
+
+    @field_validator("target_fps")
+    @classmethod
+    def validate_target_fps(cls, v):
+        return max(16, min(v, 60))
+
+    @field_validator("face_fidelity")
+    @classmethod
+    def validate_face_fidelity(cls, v):
+        return max(0.0, min(v, 1.0))
 
 
 # ============================================================
 # Camera motion → prompt suffix mapping for Wan 2.2
-# These are optimized prompt suffixes based on Wan 2.2 docs.
 # ============================================================
 CAMERA_MOTION_PROMPTS = {
     "pan_left": "smooth camera pan left, lateral tracking shot",
@@ -118,24 +152,24 @@ CAMERA_MOTION_PROMPTS = {
 }
 
 # ============================================================
-# Quality preset configurations
+# Quality preset configurations — Wan 2.2 I2V optimal ranges
 # ============================================================
 QUALITY_PRESETS = {
     "draft": {
-        "num_inference_steps": 30,
-        "guidance_scale": 4.0,
+        "num_inference_steps": 25,
+        "guidance_scale": 3.5,
     },
     "standard": {
-        "num_inference_steps": 50,
-        "guidance_scale": 5.0,
+        "num_inference_steps": 40,
+        "guidance_scale": 3.5,
     },
     "high": {
-        "num_inference_steps": 80,
-        "guidance_scale": 5.5,
+        "num_inference_steps": 50,
+        "guidance_scale": 4.0,
     },
     "ultra": {
-        "num_inference_steps": 100,
-        "guidance_scale": 6.0,
+        "num_inference_steps": 80,
+        "guidance_scale": 4.5,
     },
 }
 
@@ -146,6 +180,8 @@ class VideoResponse(BaseModel):
     duration_seconds: float | None = None
     num_frames: int | None = None
     resolution: str | None = None
+    fps: int | None = None
+    post_processed: bool = False
     model_version: str = "wan2.2-i2v-a14b"
 
 

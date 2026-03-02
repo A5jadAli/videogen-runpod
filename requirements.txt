@@ -1,17 +1,24 @@
 # ============================================================
 # VideoGen-RunPod — Wan 2.2 A14B (MoE Architecture)
+# With Post-Processing Pipeline
+#
+# CRITICAL: Pin diffusers to avoid regressions (#12878, #12011)
 # ============================================================
 
-# Core ML
-torch>=2.4.0
-torchvision
-torchaudio
+# Core ML (CUDA 12.6+)
+torch>=2.5.1
+torchvision>=0.20.1
+torchaudio>=2.5.1
 
-# Diffusers with Wan 2.2 support
-diffusers>=0.33.0
+# Diffusers with Wan 2.2 MoE support
+# Pin to 0.36.x — later versions may have regressions (#12878)
+diffusers>=0.36.0,<0.38.0
 transformers>=4.49.0
 accelerate>=1.3.0
 sentencepiece
+
+# HuggingFace Hub (for model caching)
+huggingface_hub>=0.25.0
 
 # Video I/O
 imageio[ffmpeg]
@@ -29,6 +36,16 @@ boto3
 pydantic>=2.0
 requests
 
-# Performance optimizations
-sageattention>=1.0.0; python_version >= "3.10"
-xformers; python_version >= "3.10"
+# ============================================================
+# Post-Processing Pipeline Dependencies
+# ============================================================
+
+# Face restoration — GFPGAN v1.4 (includes basicsr, facexlib)
+gfpgan>=1.3.8
+
+# Video upscaling — Real-ESRGAN x4plus
+realesrgan>=0.3.0
+
+# Performance optimizations (installed separately in Dockerfile with fallback)
+# sageattention — installed in Dockerfile
+# cache-dit — installed in Dockerfile

@@ -1,18 +1,21 @@
 import os
+import asyncio
 from server.request_queue import Job, VideoRequest, VideoResponse
 from server.storage_utils import upload
 from server.utils import webhook_response, send_progress_webhook, download_reference_image
+from server import server_settings
 
 
 async def process_job(job: Job, video_service):
     """
-    Process a video generation job using Wan 2.2 A14B MoE pipeline.
+    Process a video generation job using Wan 2.2 A14B MoE pipeline
+    with integrated post-processing.
 
-    Handles:
-    - Text-to-Video (no reference image)
-    - Image-to-Video with identity preservation (reference image provided)
-    - Camera motion control via prompt enhancement
-    - Quality presets (draft/standard/high/ultra)
+    CRITICAL: generate_video() is a blocking synchronous function that
+    runs heavy GPU inference for minutes. We wrap it in asyncio.to_thread()
+    to avoid blocking RunPod's event loop, which would:
+    - Prevent progress webhooks from sending
+    - Cause RunPod health checks to timeout → worker killed
     """
 
     def progress_callback(progress_percent, status):
@@ -24,6 +27,8 @@ async def process_job(job: Job, video_service):
         )
 
     for idx, param in enumerate(job.job_request_params):
+        pp_enabled = param.enable_post_processing and server_settings.ENABLE_POST_PROCESSING
+
         print(f"\n{'='*60}")
         print(f"Processing video request {idx + 1}/{len(job.job_request_params)} for job {job.job_id}")
         print(f"  Mode: {'I2V' if param.reference_image_url else 'T2V'}")
@@ -33,12 +38,21 @@ async def process_job(job: Job, video_service):
             print(f"  Camera: {param.camera_motion}")
         if param.quality_preset:
             print(f"  Quality: {param.quality_preset}")
+        print(f"  Post-processing: {'ON' if pp_enabled else 'OFF'}")
+        if pp_enabled:
+            print(f"    Face restore: {param.enable_face_restore} (w={param.face_fidelity})")
+            print(f"    Interpolation: {param.enable_interpolation} ({param.fps}→{param.target_fps}fps)")
+            print(f"    Upscale: {param.enable_upscale} ({param.upscale_factor}x)")
+            print(f"    FFmpeg enhance: {param.enable_ffmpeg_enhance}")
         print(f"{'='*60}")
 
-        # Download reference image if provided (for I2V / identity preservation)
+        # Download reference image if provided
         reference_image_path = None
         if param.reference_image_url:
-            reference_image_path = download_reference_image(param.reference_image_url)
+            # Run download in thread pool to avoid blocking
+            reference_image_path = await asyncio.to_thread(
+                download_reference_image, param.reference_image_url
+            )
             if not reference_image_path:
                 print("Failed to download reference image")
                 webhook_response(
@@ -50,8 +64,10 @@ async def process_job(job: Job, video_service):
                 )
                 continue
 
-        # Generate video with Wan 2.2
-        video_path = video_service.generate_video(
+        # CRITICAL: Run blocking GPU generation in a thread so RunPod's
+        # event loop stays responsive for health checks and webhooks
+        video_path = await asyncio.to_thread(
+            video_service.generate_video,
             prompt=param.prompt,
             negative_prompt=param.negative_prompt,
             height=param.height,
@@ -67,6 +83,15 @@ async def process_job(job: Job, video_service):
             enhance_prompt=param.enhance_prompt,
             quality_preset=param.quality_preset,
             progress_callback=progress_callback,
+            # Post-processing params
+            enable_post_processing=param.enable_post_processing,
+            enable_face_restore=param.enable_face_restore,
+            enable_interpolation=param.enable_interpolation,
+            enable_upscale=param.enable_upscale,
+            enable_ffmpeg_enhance=param.enable_ffmpeg_enhance,
+            upscale_factor=param.upscale_factor,
+            target_fps=param.target_fps,
+            face_fidelity=param.face_fidelity,
         )
 
         print(f"Video path: {video_path}")
@@ -90,8 +115,11 @@ async def process_job(job: Job, video_service):
             status="uploading",
         )
 
-        # Upload and send final webhook
-        process_response(job, param, video_path)
+        # Upload and send final webhook (also in thread to avoid blocking)
+        await asyncio.to_thread(process_response, job, param, video_path)
+
+        # VRAM cleanup
+        video_service.cleanup_vram()
 
         # Clean up reference image
         if reference_image_path and os.path.exists(reference_image_path):
@@ -118,14 +146,34 @@ def process_response(job: Job, request: VideoRequest, video_path: str):
             )
             return
 
+        pp_enabled = request.enable_post_processing and server_settings.ENABLE_POST_PROCESSING
+
+        # Compute actual output parameters
+        if pp_enabled and request.enable_interpolation:
+            output_fps = request.target_fps
+            duration = (request.num_frames - 1) / request.fps
+            output_frames = round(duration * request.target_fps) + 1
+        else:
+            output_fps = request.fps
+            output_frames = request.num_frames
+
+        if pp_enabled and request.enable_upscale:
+            output_width = int(request.width * request.upscale_factor)
+            output_height = int(request.height * request.upscale_factor)
+        else:
+            output_width = request.width
+            output_height = request.height
+
         duration_seconds = request.num_frames / request.fps
 
         response = VideoResponse(
             job_id=job.job_id,
             video_url=cloud_storage_path,
             duration_seconds=round(duration_seconds, 2),
-            num_frames=request.num_frames,
-            resolution=f"{request.width}x{request.height}",
+            num_frames=output_frames,
+            resolution=f"{output_width}x{output_height}",
+            fps=output_fps,
+            post_processed=pp_enabled,
             model_version="wan2.2-i2v-a14b",
         )
 
@@ -136,7 +184,7 @@ def process_response(job: Job, request: VideoRequest, video_path: str):
             "Video Generated!",
             response.dict(),
         )
-        print(f"Final webhook sent successfully for job {job.job_id}")
+        print(f"Final webhook sent for job {job.job_id}")
 
     except Exception as e:
         print(f"Error in process_response: {e}")
