@@ -537,8 +537,8 @@ class VideoService:
                 callback_on_step_end=diffusion_step_callback,
             )
 
-            if flow_shift is not None:
-                pipe_kwargs["flow_shift"] = flow_shift
+            # NOTE: flow_shift is NOT a pipeline __call__ parameter for Wan 2.2.
+            # It is a scheduler property — set on the scheduler below before generation.
 
             if use_i2v:
                 ref_image = self._prepare_reference_image(
@@ -547,6 +547,19 @@ class VideoService:
                 pipe_kwargs["image"] = ref_image
                 print(f"  [{mode}] Reference image loaded: "
                       f"{reference_image_path} -> {width}x{height}")
+
+            # ========== Set flow_shift on the scheduler (correct Wan 2.2 method) ==========
+            # flow_shift controls motion dynamics. For Wan 2.2 it must be set on the
+            # scheduler, NOT passed to pipe(). 5.0 for 720p, 3.0 for 480p.
+            if flow_shift is not None:
+                try:
+                    from diffusers import UniPCMultistepScheduler
+                    pipe.scheduler = UniPCMultistepScheduler.from_config(
+                        pipe.scheduler.config, flow_shift=flow_shift
+                    )
+                    print(f"  [{mode}] Scheduler flow_shift set to {flow_shift}")
+                except Exception as e:
+                    print(f"  [{mode}] Warning: could not set flow_shift on scheduler: {e}")
 
             # ========== Run Wan 2.2 Generation ==========
             # SageAttention is ONLY active inside this context manager.
