@@ -46,7 +46,7 @@ ENABLE_VAE_TILING = os.environ.get("ENABLE_VAE_TILING", "false").lower() == "tru
 ENABLE_VAE_SLICING = os.environ.get("ENABLE_VAE_SLICING", "false").lower() == "true"
 
 # SageAttention — ~2x faster attention via locked context manager.
-ENABLE_SAGE_ATTENTION = os.environ.get("ENABLE_SAGE_ATTENTION", "true").lower() == "true"
+ENABLE_SAGE_ATTENTION = os.environ.get("ENABLE_SAGE_ATTENTION", "false").lower() == "true"
 
 # CacheDiT — TaylorSeer + DBCache ~2-3x inference speedup (MoE-aware).
 ENABLE_TEACACHE = os.environ.get("ENABLE_TEACACHE", "true").lower() == "true"
