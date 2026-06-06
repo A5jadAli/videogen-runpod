@@ -604,7 +604,7 @@ class PostProcessor:
         input_h, input_w = frames[0].shape[:2]
 
         # Progressive tile size fallback chain for OOM recovery
-        tile_fallback_chain = sorted(set(filter(None, [upsampler.tile, 512, 320, 256, 192, 128])), reverse=True)
+        tile_fallback_chain = sorted(set(filter(None, [getattr(upsampler, 'tile', 320), 512, 320, 256, 192, 128])), reverse=True)
 
         upscaled = []
         total = len(frames)
