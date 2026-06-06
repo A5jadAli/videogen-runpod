@@ -43,13 +43,21 @@ def _init_sage_attention():
 
 
 class SageAttentionContext:
-    """Context manager that enables SageAttention ONLY within its scope."""
+    """Context manager that enables SageAttention ONLY within its scope.
+    Falls back to default SDPA for unsupported head dimensions (e.g. VAE attention)."""
 
     def __enter__(self):
         if _sage_attn_fn is not None:
             _sdpa_lock.acquire()
             import torch.nn.functional as F
-            F.scaled_dot_product_attention = _sage_attn_fn
+
+            def _safe_sage_attn(*args, **kwargs):
+                try:
+                    return _sage_attn_fn(*args, **kwargs)
+                except (AssertionError, RuntimeError):
+                    return _original_sdpa(*args, **kwargs)
+
+            F.scaled_dot_product_attention = _safe_sage_attn
         return self
 
     def __exit__(self, *args):

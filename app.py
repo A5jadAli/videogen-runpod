@@ -162,7 +162,7 @@ def run_generation(data: dict):
 
     os.environ["MODEL_CACHE_DIR"] = MODELS_PATH
     os.environ["HF_HOME"] = os.path.join(MODELS_PATH, "huggingface")
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
 
     from server import server_settings
     from server.request_queue import VideoRequest, Job
