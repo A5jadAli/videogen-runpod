@@ -54,6 +54,7 @@ video_image = (
         "realesrgan>=0.3.0",
         "lpips",
         "fastapi[standard]",
+        "ftfy",
     )
     # Performance optimizations (non-fatal if they fail)
     .run_commands(
@@ -322,7 +323,11 @@ def generate(data: dict) -> dict:
         return {"error": "No webhook_url provided"}
     if isinstance(job_request_params, dict):
         job_request_params = [job_request_params]
-    if not job_request_params or not isinstance(job_request_params, list) or len(job_request_params) == 0:
+    if (
+        not job_request_params
+        or not isinstance(job_request_params, list)
+        or len(job_request_params) == 0
+    ):
         return {"error": "No valid job_request_params provided"}
 
     function_call = run_generation.spawn(data)
